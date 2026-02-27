@@ -2535,7 +2535,10 @@ var _acTimer = null, _acIdx = -1, _acItems = [];
 var _serverMode = !!(location.protocol === 'http:' || location.protocol === 'https:');
 // Try to detect if we're served by our local API
 if (_serverMode) {
-    fetch('/api/ping').then(function(r) { if (!r.ok) _serverMode = false; }).catch(function() { _serverMode = false; });
+    fetch('/api/ping').then(function(r) {
+        if (!r.ok) _serverMode = false;
+        else saveWatchlist(); // seed cache with server-loaded stocks
+    }).catch(function() { _serverMode = false; });
 }
 
 function switchTab(ticker) {
@@ -2585,6 +2588,23 @@ function updateCount() {
     sub.textContent = n + ' stock' + (n !== 1 ? 's' : '');
 }
 
+// ── localStorage watchlist cache ──
+var _LS_KEY = 'screener_watchlist';
+function saveWatchlist() {
+    var tickers = [];
+    document.querySelectorAll('.tab-btn').forEach(function(b) {
+        if (b.dataset.ticker) tickers.push(b.dataset.ticker);
+    });
+    try { localStorage.setItem(_LS_KEY, JSON.stringify(tickers)); } catch(e) {}
+}
+function getCachedWatchlist() {
+    try { return JSON.parse(localStorage.getItem(_LS_KEY) || '[]'); } catch(e) { return []; }
+}
+function clearCache() {
+    try { localStorage.removeItem(_LS_KEY); } catch(e) {}
+    console.log('Cache cleared');
+}
+
 function deleteStock(ticker, evt) {
     evt.stopPropagation();
     var pane = document.getElementById('pane-' + ticker);
@@ -2593,6 +2613,7 @@ function deleteStock(ticker, evt) {
     if (pane) pane.remove();
     if (btn) btn.remove();
     updateCount();
+    saveWatchlist();
     // Switch to first remaining tab if we deleted the active one
     if (wasActive) {
         var first = document.querySelector('.tab-btn');
@@ -2683,6 +2704,7 @@ function addSymbol(singleTicker) {
     });
     if (tickers.length === 1) switchTab(tickers[0]);
     input.value = '';
+    saveWatchlist();
 }
 
 // ── Autocomplete ──
@@ -2778,6 +2800,35 @@ window.addEventListener('resize', function() {
 document.addEventListener('click', function(e) {
     if (!e.target.closest('.add-symbol')) hideAC();
 });
+
+// ── On load: restore cached watchlist ──
+(function restoreFromCache() {
+    if (!_serverMode) return; // only in serve mode
+    var cached = getCachedWatchlist();
+    if (!cached.length) return;
+    // Find tickers in cache that aren't already loaded
+    var loaded = {};
+    document.querySelectorAll('.tab-btn').forEach(function(b) {
+        loaded[b.dataset.ticker] = true;
+    });
+    var toLoad = cached.filter(function(t) { return !loaded[t]; });
+    if (!toLoad.length) {
+        // Cache matches dashboard — save to sync (handles removals from server restart)
+        saveWatchlist();
+        return;
+    }
+    console.log('Restoring ' + toLoad.length + ' cached stocks...');
+    // Sequentially load missing stocks with small delay to avoid hammering
+    var idx = 0;
+    function loadNext() {
+        if (idx >= toLoad.length) return;
+        var t = toLoad[idx++];
+        addSymbol(t);
+        setTimeout(loadNext, 500);
+    }
+    // Wait a moment for serverMode detection to settle
+    setTimeout(loadNext, 800);
+})();
 """
 
     # ── Build tab buttons ──
