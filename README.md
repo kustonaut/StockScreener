@@ -2,6 +2,8 @@
 
 **Full-stack Indian stock screener** that scrapes [screener.in](https://www.screener.in) for comprehensive fundamental data, generates quality scores, and serves an interactive dashboard with live stock analysis.
 
+**[🔗 Live Demo — Nifty 50 Dashboard](https://kustonaut.github.io/StockScreener/)**
+
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -10,12 +12,13 @@
 - **Deep Fundamentals**: Revenue, profit, margins, ROE, ROCE, debt, promoter holding, institutional ownership, and 50+ metrics
 - **Quality Scoring**: A+ to D grading based on growth, profitability, financial health, valuation, and momentum
 - **Interactive Dashboard**: Vertical sidebar with tabbed stocks, delete/add/search functionality
+- **Accordion Sections**: Group stocks into collapsible sections (e.g., Nifty 50, Watchlist, Portfolio)
 - **Live Server Mode** (`--serve`): Add and analyse stocks in real-time from the browser — no re-running scripts
 - **Smart Autocomplete**: Type a ticker and get instant suggestions from screener.in
-- **Price Charts**: 1Y / 3Y / 5Y / All-time candlestick charts via yfinance + Plotly
+- **Price Charts**: 1Y / 3Y / 5Y / All-time candlestick charts via yfinance + Plotly (All-time default)
 - **Income Sankey**: Visualise revenue → expenses → profit flow
 - **Watchlist Support**: Load tickers from a file, paste comma-separated lists, or type them one by one
-- **Keyboard Navigation**: ↑↓ arrows to browse suggestions, Enter to select, Escape to close
+- **Keyboard Navigation**: ↑↓ arrows to switch stocks in sidebar, browse autocomplete suggestions
 
 ## Quick Start
 
@@ -33,6 +36,9 @@ python company_screener.py RELIANCE
 # Static HTML dashboard
 python company_screener.py -w watchlist_sample.txt --html
 
+# Dashboard with accordion sections
+python company_screener.py --sections "Nifty 50:watchlist_nifty50.txt" "Watchlist:watchlist_sample.txt" --html
+
 # 🚀 Live interactive server (recommended)
 python company_screener.py -w watchlist_sample.txt --serve
 ```
@@ -41,7 +47,7 @@ The `--serve` mode starts a local web server at `http://localhost:9000` where yo
 - **Search & add** any stock via the autocomplete search bar
 - **Delete** stocks with the ✕ button on each tab
 - **Paste** comma/newline-separated ticker lists
-- **Navigate** with arrow keys
+- **Navigate** with ↑↓ arrow keys to switch between stocks
 
 ## Usage
 
@@ -53,6 +59,7 @@ positional arguments:
 
 options:
   --watchlist, -w FILE  Load tickers from watchlist file
+  --sections NAME:FILE  Accordion sections (e.g., "Nifty 50:nifty50.txt" "Watchlist:my.txt")
   --serve               Start live interactive server
   --port PORT           Server port (default: 9000)
   --html                Generate static HTML dashboard
