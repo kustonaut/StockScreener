@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════════════════════════
+# Stock Screener — Sample Watchlist
+# ═══════════════════════════════════════════════════════════════
+# One ticker per line (screener.in symbols)
+# Lines starting with # are comments
+# Blank lines are ignored
+#
+# Usage:
+#   python company_screener.py -w watchlist_sample.txt --html
+# ═══════════════════════════════════════════════════════════════
+
+# ── Large Cap ──
+RELIANCE
+TCS
+INFY
+HDFCBANK
+ICICIBANK
+
+# ── Mid Cap ──
+MARUTI
+TITAN
+PIDILITIND
+DABUR
+
+# ── Small Cap ──
+JUBLFOOD
+ASTRAL
