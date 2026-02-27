@@ -2267,11 +2267,13 @@ def _build_stock_pane(data: dict, analysis: dict, charts: dict,
     price_periods = [(k, charts[k]) for k in ["price_1y", "price_3y", "price_5y", "price_max"] if k in charts]
     if price_periods:
         period_labels = {"price_1y": "1Y", "price_3y": "3Y", "price_5y": "5Y", "price_max": "All"}
+        # Default to All-time (price_max) if available, else first available
+        default_pk = "price_max" if any(pk == "price_max" for pk, _ in price_periods) else price_periods[0][0]
         btns = ""
         divs = ""
         for idx, (pk, phtml) in enumerate(price_periods):
-            active_cls = " active" if idx == 0 else ""
-            disp = "block" if idx == 0 else "none"
+            active_cls = " active" if pk == default_pk else ""
+            disp = "block" if pk == default_pk else "none"
             btns += f'<button class="period-btn{active_cls}" data-period="{pk}" onclick="switchPeriod(\'{ticker}\', \'{pk}\')">{period_labels[pk]}</button>'
             divs += f'<div class="price-period" id="{ticker}-{pk}" style="display:{disp}">{phtml}</div>'
         price_chart_html = f'''<div class="section" style="padding:12px">
@@ -2378,10 +2380,12 @@ def _build_stock_pane(data: dict, analysis: dict, charts: dict,
 </div>'''
 
 
-def generate_dashboard(stocks: list) -> str:
+def generate_dashboard(stocks: list, sections: list = None) -> str:
     """
     Generate multi-stock tabbed dashboard HTML.
     stocks: list of dicts with keys: data, analysis, charts, sankey_html
+    sections: optional list of dicts with keys: name, tickers (for accordion grouping)
+              e.g. [{"name": "Nifty 50", "tickers": ["RELIANCE", ...]}, ...]
     """
     # ── CSS (plain string — no f-string brace escaping) ──
     css = """
@@ -2493,6 +2497,20 @@ body.sidebar-collapsed .sidebar-toggle { left:0; }
     color:var(--grey); font-family:inherit; transition:all 0.15s; }
 .period-btn:hover { color:var(--dark); border-color:#94A3B8; }
 .period-btn.active { background:var(--blue); color:white; border-color:var(--blue); }
+/* Accordion sections */
+.section-header { display:flex; align-items:center; padding:8px 12px;
+    color:#94A3B8; font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:1.2px; cursor:pointer; user-select:none;
+    border-bottom:1px solid rgba(255,255,255,0.05);
+    transition:background 0.15s; }
+.section-header:hover { background:rgba(255,255,255,0.03); }
+.section-header .chevron { margin-right:6px; transition:transform 0.2s;
+    font-size:8px; display:inline-block; }
+.section-header.collapsed .chevron { transform:rotate(-90deg); }
+.section-header .sec-count { margin-left:auto; color:#475569;
+    font-size:9px; font-weight:400; }
+.section-body { overflow:hidden; transition:max-height 0.3s ease; }
+.section-body.collapsed { max-height:0 !important; overflow:hidden; }
 /* Add symbol input */
 .add-symbol { padding:8px; border-top:1px solid rgba(255,255,255,0.1); position:relative; }
 .add-symbol input { width:100%; padding:7px 10px; border:1px solid rgba(255,255,255,0.15);
@@ -2806,6 +2824,34 @@ document.addEventListener('click', function(e) {
     if (!e.target.closest('.add-symbol')) hideAC();
 });
 
+// ── Keyboard navigation for stock tabs ──
+document.addEventListener('keydown', function(e) {
+    // Only handle if not typing in an input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    var btns = Array.from(document.querySelectorAll('.tab-btn'));
+    if (!btns.length) return;
+    var activeIdx = btns.findIndex(function(b) { return b.classList.contains('active'); });
+    if (e.key === 'ArrowDown') {
+        activeIdx = (activeIdx + 1) % btns.length;
+    } else {
+        activeIdx = (activeIdx - 1 + btns.length) % btns.length;
+    }
+    var ticker = btns[activeIdx].dataset.ticker;
+    switchTab(ticker);
+    btns[activeIdx].scrollIntoView({ block: 'nearest' });
+});
+
+// ── Accordion toggle ──
+function toggleSection(id) {
+    var hdr = document.getElementById('sec-hdr-' + id);
+    var body = document.getElementById('sec-body-' + id);
+    if (!hdr || !body) return;
+    hdr.classList.toggle('collapsed');
+    body.classList.toggle('collapsed');
+}
+
 // ── On load: restore cached watchlist ──
 (function restoreFromCache() {
     if (!_serverMode) return; // only in serve mode
@@ -2836,23 +2882,57 @@ document.addEventListener('click', function(e) {
 })();
 """
 
-    # ── Build tab buttons ──
-    tab_btns = ""
-    first_ticker = stocks[0]["data"]["ticker"] if stocks else ""
-    for i, s in enumerate(stocks):
+    # ── Build tab buttons (grouped by sections if provided) ──
+    def _make_tab_btn(s, is_first=False):
         t = s["data"]["ticker"]
         a = s["analysis"]
         g = a["quality"]["grade"]
         gc = {"A+": "#10B981", "A": "#22C55E", "B+": "#F59E0B",
               "B": "#F59E0B", "C": "#EF4444", "D": "#DC2626"}.get(g, "#64748B")
         price = a.get("current_price", 0)
-        active = " active" if i == 0 else ""
-        tab_btns += (f'<button class="tab-btn{active}" data-ticker="{t}" '
-                     f"onclick=\"switchTab('{t}')\">"
-                     f'<span class="ticker-name">{t}</span>'
-                     f'<span class="price-sm">₹{price:,.0f}</span> '
-                     f'<span class="grade-badge" style="background:{gc}">{g}</span>'
-                     f'<span class="del-btn" onclick="deleteStock(\'{t}\', event)">&times;</span></button>\n')
+        active = " active" if is_first else ""
+        return (f'<button class="tab-btn{active}" data-ticker="{t}" '
+                f"onclick=\"switchTab('{t}')\">"
+                f'<span class="ticker-name">{t}</span>'
+                f'<span class="price-sm">₹{price:,.0f}</span> '
+                f'<span class="grade-badge" style="background:{gc}">{g}</span>'
+                f'<span class="del-btn" onclick="deleteStock(\'{t}\', event)">&times;</span></button>\n')
+
+    first_ticker = stocks[0]["data"]["ticker"] if stocks else ""
+    # Index stocks by ticker for section lookup
+    stock_by_ticker = {s["data"]["ticker"]: s for s in stocks}
+
+    tab_btns = ""
+    if sections:
+        assigned = set()
+        for sec_idx, sec in enumerate(sections):
+            sec_id = re.sub(r'[^a-z0-9]', '', sec["name"].lower())
+            sec_tickers = [t for t in sec["tickers"] if t in stock_by_ticker]
+            assigned.update(sec_tickers)
+            tab_btns += (f'<div class="section-header" id="sec-hdr-{sec_id}" '
+                         f'onclick="toggleSection(\'{sec_id}\')">' 
+                         f'<span class="chevron">▼</span>{sec["name"]}'
+                         f'<span class="sec-count">{len(sec_tickers)}</span></div>\n')
+            tab_btns += f'<div class="section-body" id="sec-body-{sec_id}" style="max-height:9999px">\n'
+            for t in sec_tickers:
+                s = stock_by_ticker[t]
+                is_first = (t == first_ticker)
+                tab_btns += _make_tab_btn(s, is_first)
+            tab_btns += '</div>\n'
+        # Any unassigned stocks go into an "Other" section
+        remaining = [s for s in stocks if s["data"]["ticker"] not in assigned]
+        if remaining:
+            tab_btns += ('<div class="section-header" id="sec-hdr-other" '
+                         'onclick="toggleSection(\'other\')">' 
+                         '<span class="chevron">▼</span>Other'
+                         f'<span class="sec-count">{len(remaining)}</span></div>\n')
+            tab_btns += '<div class="section-body" id="sec-body-other" style="max-height:9999px">\n'
+            for s in remaining:
+                tab_btns += _make_tab_btn(s, s["data"]["ticker"] == first_ticker)
+            tab_btns += '</div>\n'
+    else:
+        for i, s in enumerate(stocks):
+            tab_btns += _make_tab_btn(s, i == 0)
 
     # ── Build panes ──
     panes = ""
@@ -3042,10 +3122,10 @@ class ScreenerHandler(BaseHTTPRequestHandler):
         self.send_error(404, "Not found")
 
 
-def run_server(stocks, port=8765, standalone=False, no_open=False):
+def run_server(stocks, port=8765, standalone=False, no_open=False, sections=None):
     """Start the live server with pre-loaded dashboard."""
     print(f"\n{C.CYAN}{C.BOLD}🚀 Generating dashboard...{C.RESET}")
-    html = generate_dashboard(stocks)
+    html = generate_dashboard(stocks, sections=sections)
 
     server = ThreadingHTTPServer(("127.0.0.1", port), ScreenerHandler)
     server.dashboard_html = html
@@ -3103,6 +3183,8 @@ Examples:
                         help="Don't auto-open HTML report in browser")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="Output file path")
+    parser.add_argument("--sections", type=str, nargs="+", metavar="NAME:FILE",
+                        help="Accordion sections as NAME:FILE pairs, e.g. 'Nifty 50:nifty50.txt' 'My Stocks:watchlist.txt'")
 
     args = parser.parse_args()
 
@@ -3116,6 +3198,24 @@ Examples:
         except FileNotFoundError as e:
             print(f"{C.RED}❌ {e}{C.RESET}")
             sys.exit(1)
+
+    # Parse --sections (NAME:FILE pairs for accordion grouping)
+    sections = None
+    if args.sections:
+        sections = []
+        for spec in args.sections:
+            if ":" not in spec:
+                print(f"{C.RED}❌ Invalid section format '{spec}'. Use NAME:FILE{C.RESET}")
+                sys.exit(1)
+            name, filepath = spec.split(":", 1)
+            try:
+                sec_tickers = _load_watchlist(filepath)
+                sections.append({"name": name.strip(), "tickers": sec_tickers})
+                tickers.extend(sec_tickers)
+                print(f"{C.CYAN}📂 Section '{name.strip()}': {len(sec_tickers)} tickers from {filepath}{C.RESET}")
+            except FileNotFoundError as e:
+                print(f"{C.RED}❌ {e}{C.RESET}")
+                sys.exit(1)
 
     # Deduplicate while preserving order
     seen = set()
@@ -3180,7 +3280,7 @@ Examples:
     # ── SERVE MODE ──
     if args.serve:
         run_server(stocks, port=args.port, standalone=args.standalone,
-                   no_open=args.no_open)
+                   no_open=args.no_open, sections=sections)
         return
 
     # JSON export
@@ -3209,7 +3309,7 @@ Examples:
         else:
             out_path = args.output or str(out_dir / "screener_dashboard.html")
 
-        html = generate_dashboard(stocks)
+        html = generate_dashboard(stocks, sections=sections)
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html)
         print(f"\n{C.GREEN}✅ Dashboard saved: {out_path}{C.RESET}")
