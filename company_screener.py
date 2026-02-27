@@ -2146,6 +2146,11 @@ def _generate_charts(data: dict, ticker: str = "") -> dict:
     return charts
 
 
+def _defer_plotly(html: str) -> str:
+    """Convert inline <script> tags to deferred so they don't auto-execute on page load."""
+    return re.sub(r'<script\b[^>]*>', '<script type="text/plotly-deferred">', html)
+
+
 def _build_stock_pane(data: dict, analysis: dict, charts: dict,
                       sankey_html: str, active: bool = False) -> str:
     """Build the HTML content for one stock's dashboard tab pane."""
@@ -2275,7 +2280,7 @@ def _build_stock_pane(data: dict, analysis: dict, charts: dict,
             active_cls = " active" if pk == default_pk else ""
             disp = "block" if pk == default_pk else "none"
             btns += f'<button class="period-btn{active_cls}" data-period="{pk}" onclick="switchPeriod(\'{ticker}\', \'{pk}\')">{period_labels[pk]}</button>'
-            divs += f'<div class="price-period" id="{ticker}-{pk}" style="display:{disp}">{phtml}</div>'
+            divs += f'<div class="price-period" id="{ticker}-{pk}" style="display:{disp}">{_defer_plotly(phtml)}</div>'
         price_chart_html = f'''<div class="section" style="padding:12px">
     <div class="period-bar" id="pbar-{ticker}">{btns}</div>
     {divs}
@@ -2285,7 +2290,7 @@ def _build_stock_pane(data: dict, analysis: dict, charts: dict,
     chart_cards = ""
     for key in ["annual_pl", "quarterly", "margins", "returns", "shareholding", "cashflow"]:
         if key in charts:
-            chart_cards += f'<div class="chart-card">{charts[key]}</div>\n'
+            chart_cards += f'<div class="chart-card">{_defer_plotly(charts[key])}</div>\n'
 
     opm_val = pl.get("opm_latest", 0)
     npm_val = pl.get("npm_latest", 0)
@@ -2322,7 +2327,7 @@ def _build_stock_pane(data: dict, analysis: dict, charts: dict,
 
 {price_chart_html}
 
-{"" if not sankey_html else f'<div class="section"><h2>Income Flow (Sankey)</h2><div style="width:100%;overflow-x:auto">{sankey_html}</div></div>'}
+{"" if not sankey_html else f'<div class="section"><h2>Income Flow (Sankey)</h2><div style="width:100%;overflow-x:auto">{_defer_plotly(sankey_html)}</div></div>'}
 
 {"" if not chart_cards else f'<div class="charts-grid">{chart_cards}</div>'}
 
@@ -2559,6 +2564,17 @@ if (_serverMode) {
     }).catch(function() { _serverMode = false; });
 }
 
+// ── Lazy chart rendering ──
+function renderCharts(pane) {
+    if (!pane) return;
+    var deferred = pane.querySelectorAll('script[type="text/plotly-deferred"]');
+    deferred.forEach(function(s) {
+        var ns = document.createElement('script');
+        ns.textContent = s.textContent;
+        s.parentNode.replaceChild(ns, s);
+    });
+}
+
 function switchTab(ticker) {
     document.querySelectorAll('.tab-pane').forEach(function(p) { p.style.display = 'none'; });
     document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
@@ -2567,6 +2583,8 @@ function switchTab(ticker) {
     document.querySelectorAll('.tab-btn').forEach(function(b) {
         if (b.dataset.ticker === ticker) b.classList.add('active');
     });
+    // Render deferred charts on first view
+    if (pane) renderCharts(pane);
     setTimeout(function() {
         var plots = pane ? pane.querySelectorAll('.js-plotly-plot') : [];
         plots.forEach(function(p) { if (window.Plotly) Plotly.Plots.resize(p); });
@@ -2653,7 +2671,7 @@ function addTabButton(ticker, price, grade, gradeColor) {
     btn.innerHTML = '<span class="ticker-name">' + ticker + '</span>' +
         (price ? '<span class="price-sm">' + price + '</span> ' : '') +
         '<span class="grade-badge" style="background:' + (gradeColor||'#64748B') + '">' + (grade||'?') + '</span>' +
-        '<span class="del-btn" onclick="deleteStock(\'' + ticker + '\', event)">&times;</span>';
+        '<span class="del-btn" onclick="deleteStock(\\'' + ticker + '\\', event)">&times;</span>';
     list.appendChild(btn);
     return btn;
 }
@@ -2704,6 +2722,8 @@ function addSymbol(singleTicker) {
                     if (gb) { gb.textContent = data.grade || '?'; gb.style.background = data.grade_color || '#64748B'; }
                     // Replace pane content
                     pane.outerHTML = data.pane_html;
+                    var np = document.getElementById('pane-' + ticker);
+                    if (np) renderCharts(np);
                     switchTab(ticker);
                 })
                 .catch(function(err) {
@@ -2879,6 +2899,13 @@ function toggleSection(id) {
     }
     // Wait a moment for serverMode detection to settle
     setTimeout(loadNext, 800);
+})();
+
+// ── Render first visible pane's charts on page load ──
+(function initFirstPane() {
+    var first = document.querySelector('.tab-pane[style*=\"display:block\"]') ||
+                document.querySelector('.tab-pane');
+    if (first) renderCharts(first);
 })();
 """
 
