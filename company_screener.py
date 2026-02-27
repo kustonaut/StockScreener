@@ -2566,11 +2566,16 @@ function switchPeriod(ticker, period) {
     if (bar) bar.querySelectorAll('.period-btn').forEach(function(b) {
         b.classList.toggle('active', b.dataset.period === period);
     });
+    // Force Plotly to recalculate layout for charts that were hidden at render time
     setTimeout(function() {
-        if (target) target.querySelectorAll('.js-plotly-plot').forEach(function(p) {
-            if (window.Plotly) Plotly.Plots.resize(p);
+        if (!target) return;
+        target.querySelectorAll('.js-plotly-plot').forEach(function(p) {
+            if (window.Plotly) {
+                Plotly.Plots.resize(p);
+                Plotly.relayout(p, { autosize: true });
+            }
         });
-    }, 150);
+    }, 50);
 }
 
 function toggleSidebar() {
@@ -3088,8 +3093,8 @@ Examples:
                         help="Generate HTML dashboard")
     parser.add_argument("--serve", action="store_true",
                         help="Start live server with interactive add/delete/search")
-    parser.add_argument("--port", type=int, default=8765,
-                        help="Port for --serve mode (default: 8765)")
+    parser.add_argument("--port", type=int, default=9000,
+                        help="Port for --serve mode (default: 9000)")
     parser.add_argument("--json", action="store_true",
                         help="Export raw data as JSON")
     parser.add_argument("--standalone", "-s", action="store_true",

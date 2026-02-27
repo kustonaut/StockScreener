@@ -37,7 +37,7 @@ python company_screener.py -w watchlist_sample.txt --html
 python company_screener.py -w watchlist_sample.txt --serve
 ```
 
-The `--serve` mode starts a local web server at `http://localhost:8765` where you can:
+The `--serve` mode starts a local web server at `http://localhost:9000` where you can:
 - **Search & add** any stock via the autocomplete search bar
 - **Delete** stocks with the ✕ button on each tab
 - **Paste** comma/newline-separated ticker lists
@@ -54,7 +54,7 @@ positional arguments:
 options:
   --watchlist, -w FILE  Load tickers from watchlist file
   --serve               Start live interactive server
-  --port PORT           Server port (default: 8765)
+  --port PORT           Server port (default: 9000)
   --html                Generate static HTML dashboard
   --brief, -b           Quick scorecard only (terminal)
   --json                Export raw data as JSON
