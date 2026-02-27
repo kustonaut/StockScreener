@@ -3009,9 +3009,524 @@ function toggleSection(id) {
     return html
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN CLI
-# ═══════════════════════════════════════════════════════════════════════════════
+def generate_demo_site(stocks: list, output_dir: str, sections: list = None):
+    """Generate a split-file demo site: lightweight index.html + per-stock pane fragments.
+
+    This avoids the 80+ MB monolithic HTML problem. Each stock pane is saved as
+    a separate file under panes/ and fetched on demand when the user clicks a tab.
+
+    Args:
+        stocks: list of dicts with keys: data, analysis, charts, sankey_html
+        output_dir: directory to write index.html and panes/
+        sections: optional accordion sections
+    """
+    out = Path(output_dir)
+    panes_dir = out / "panes"
+    panes_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Write per-stock pane fragments ──
+    stock_index = []  # [{ticker, name, price, grade, grade_color}, ...]
+    for i, s in enumerate(stocks):
+        t = s["data"]["ticker"]
+        a = s["analysis"]
+        g = a["quality"]["grade"]
+        gc = {"A+": "#10B981", "A": "#22C55E", "B+": "#F59E0B",
+              "B": "#F59E0B", "C": "#EF4444", "D": "#DC2626"}.get(g, "#64748B")
+        price = a.get("current_price", 0)
+        stock_index.append({
+            "ticker": t,
+            "name": s["data"]["company_name"],
+            "price": f"₹{price:,.0f}" if price else "",
+            "grade": g,
+            "grade_color": gc,
+        })
+        # Build pane HTML (active=True so display:block)
+        pane_html = _build_stock_pane(
+            s["data"], a, s.get("charts", {}), s.get("sankey_html", ""), active=True)
+        pane_path = panes_dir / f"{t}.html"
+        with open(pane_path, "w", encoding="utf-8") as f:
+            f.write(pane_html)
+        print(f"{C.GREEN}📄 Pane: {pane_path.name} ({pane_path.stat().st_size // 1024} KB){C.RESET}")
+
+    # ── Reuse CSS from generate_dashboard ──
+    # We call generate_dashboard with empty stocks just to grab the CSS
+    # Instead, duplicate the CSS/JS inline (it's a plain string)
+    css = _demo_css()
+    stock_json = json.dumps(stock_index, ensure_ascii=False)
+
+    # Build sidebar tab buttons (no pane data, just buttons)
+    first_ticker = stocks[0]["data"]["ticker"] if stocks else ""
+    stock_by_ticker = {s["data"]["ticker"]: s for s in stocks}
+
+    def _btn_html(info, active=False):
+        t = info["ticker"]
+        act = " active" if active else ""
+        return (f'<button class="tab-btn{act}" data-ticker="{t}" '
+                f"onclick=\"loadStock('{t}')\">"
+                f'<span class="ticker-name">{t}</span>'
+                f'<span class="price-sm">{info["price"]}</span> '
+                f'<span class="grade-badge" style="background:{info["grade_color"]}">{info["grade"]}</span>'
+                f'<span class="del-btn" onclick="removeTab(\'{t}\', event)">&times;</span></button>\n')
+
+    tab_btns = ""
+    if sections:
+        assigned = set()
+        for sec in sections:
+            sec_id = re.sub(r'[^a-z0-9]', '', sec["name"].lower())
+            sec_tickers = [t for t in sec["tickers"] if t in stock_by_ticker]
+            assigned.update(sec_tickers)
+            tab_btns += (f'<div class="section-header" id="sec-hdr-{sec_id}" '
+                         f'onclick="toggleSection(\'{sec_id}\')">'
+                         f'<span class="chevron">▼</span>{sec["name"]}'
+                         f'<span class="sec-count">{len(sec_tickers)}</span></div>\n')
+            tab_btns += f'<div class="section-body" id="sec-body-{sec_id}" style="max-height:9999px">\n'
+            for info in stock_index:
+                if info["ticker"] in sec_tickers:
+                    tab_btns += _btn_html(info, info["ticker"] == first_ticker)
+            tab_btns += '</div>\n'
+        remaining = [info for info in stock_index if info["ticker"] not in assigned]
+        if remaining:
+            tab_btns += ('<div class="section-header" id="sec-hdr-other" '
+                         'onclick="toggleSection(\'other\')">'
+                         '<span class="chevron">▼</span>Other'
+                         f'<span class="sec-count">{len(remaining)}</span></div>\n')
+            tab_btns += '<div class="section-body" id="sec-body-other" style="max-height:9999px">\n'
+            for info in remaining:
+                tab_btns += _btn_html(info, info["ticker"] == first_ticker)
+            tab_btns += '</div>\n'
+    else:
+        for i, info in enumerate(stock_index):
+            tab_btns += _btn_html(info, i == 0)
+
+    n_stocks = len(stocks)
+    title = "StockScreener — Nifty 50 Dashboard" if n_stocks >= 50 else "StockScreener Dashboard"
+
+    js = _demo_js(stock_json)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>{css}</style>
+</head>
+<body>
+<nav class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+        <h3>Stock Screener</h3>
+        <div class="subtitle">{n_stocks} stock{'s' if n_stocks != 1 else ''}</div>
+    </div>
+    <div class="tab-list">{tab_btns}</div>
+    <div class="add-symbol">
+        <input type="text" id="add-symbol-input" placeholder="Search stocks..."
+               onkeydown="handleSymbolInput(event)">
+        <div id="ac-dropdown" class="ac-dropdown"></div>
+        <div class="hint">Type ticker or company name, ↑↓ to navigate</div>
+    </div>
+</nav>
+<button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">&#9776;</button>
+<div class="main-container" id="main-container">
+    <div class="loading-pane" id="initial-loader">
+        <div class="spinner"></div><br>Loading {first_ticker}...
+    </div>
+</div>
+<script>{js}</script>
+</body>
+</html>"""
+
+    index_path = out / "index.html"
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    total_kb = sum(f.stat().st_size for f in panes_dir.iterdir()) // 1024
+    print(f"\n{C.GREEN}✅ Demo site: {index_path}{C.RESET}")
+    print(f"{C.GREY}   Shell: {index_path.stat().st_size // 1024} KB{C.RESET}")
+    print(f"{C.GREY}   Panes: {n_stocks} files, {total_kb} KB total{C.RESET}")
+
+
+def _demo_css() -> str:
+    """Return the CSS for the demo site (same as dashboard, extracted for reuse)."""
+    return """
+:root { --green:#10B981; --red:#EF4444; --amber:#F59E0B;
+    --blue:#3B82F6; --grey:#64748B; --dark:#0F172A;
+    --card:#FFFFFF; --bg:#F1F5F9; --border:#E2E8F0;
+    --sidebar-w:220px; }
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; }
+body { font-family:'Segoe UI',-apple-system,sans-serif; background:var(--bg);
+    color:#1E293B; display:flex; }
+.sidebar { position:fixed; top:0; left:0; width:var(--sidebar-w); height:100vh;
+    background:var(--dark); overflow-y:auto; z-index:100;
+    box-shadow:2px 0 10px rgba(0,0,0,0.3); display:flex; flex-direction:column; }
+.sidebar-header { padding:18px 16px 12px; border-bottom:1px solid rgba(255,255,255,0.1); }
+.sidebar-header h3 { color:white; font-size:14px; font-weight:700; letter-spacing:0.5px; }
+.sidebar-header .subtitle { color:#64748B; font-size:10px; margin-top:2px; }
+.tab-list { flex:1; padding:8px; }
+.tab-btn { display:flex; align-items:center; justify-content:space-between;
+    width:100%; background:transparent; border:none; color:#94A3B8;
+    padding:8px 10px; border-radius:6px; cursor:pointer; font-size:12px;
+    font-weight:500; text-align:left; transition:all 0.15s;
+    font-family:inherit; gap:4px; position:relative; }
+.tab-btn:hover { background:rgba(255,255,255,0.06); color:white; }
+.tab-btn.active { background:var(--blue); color:white; font-weight:700; }
+.tab-btn .ticker-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tab-btn .price-sm { font-size:10px; color:#64748B; white-space:nowrap; }
+.tab-btn.active .price-sm { color:rgba(255,255,255,0.8); }
+.tab-btn .grade-badge { font-size:9px; padding:1px 5px; border-radius:4px;
+    color:white; font-weight:700; flex-shrink:0; }
+.main-container { margin-left:var(--sidebar-w); width:calc(100% - var(--sidebar-w));
+    max-width:1200px; padding:20px; }
+.tab-pane { display:none; }
+.stock-header { display:flex; justify-content:space-between; align-items:flex-start;
+    flex-wrap:wrap; gap:12px; margin-bottom:20px;
+    background:var(--card); border-radius:12px; padding:20px;
+    box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.stock-header h1 { font-size:22px; color:var(--dark); }
+.stock-header .sub { font-size:12px; color:var(--grey); margin-top:2px; }
+.price-block { text-align:right; }
+.price-block .price { font-size:26px; font-weight:800; color:var(--dark); }
+.price-block .meta { font-size:11px; color:var(--grey); }
+.scorecard { display:grid; grid-template-columns:repeat(5,1fr); gap:8px;
+    margin-bottom:16px; }
+.score-card { background:var(--card); border-radius:10px; padding:14px;
+    text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.06); }
+.score-card .label { font-size:10px; color:var(--grey); text-transform:uppercase;
+    letter-spacing:0.5px; margin-bottom:4px; }
+.score-card .value { font-size:24px; font-weight:800; }
+.score-card .desc { font-size:11px; color:var(--grey); margin-top:2px; }
+.section { background:var(--card); border-radius:10px; padding:16px;
+    margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.06); }
+.section h2 { font-size:14px; color:var(--dark); margin-bottom:10px;
+    padding-bottom:6px; border-bottom:1px solid var(--border); }
+.grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px;
+    margin-bottom:16px; }
+.grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:10px;
+    margin-bottom:16px; }
+.charts-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px;
+    margin-bottom:16px; }
+.chart-card { background:var(--card); border-radius:10px; padding:12px;
+    box-shadow:0 1px 3px rgba(0,0,0,0.06); overflow:hidden; }
+.sidebar-toggle { position:fixed; top:8px; left:var(--sidebar-w); z-index:101;
+    width:24px; height:24px; border-radius:50%; border:1px solid var(--border);
+    background:var(--card); cursor:pointer; display:flex; align-items:center;
+    justify-content:center; font-size:12px; color:var(--grey);
+    box-shadow:0 1px 4px rgba(0,0,0,0.15); transition:left 0.2s; }
+body.sidebar-collapsed .sidebar { width:0; overflow:hidden; }
+body.sidebar-collapsed .main-container { margin-left:0; width:100%; max-width:100%; }
+body.sidebar-collapsed .sidebar-toggle { left:0; }
+@media(max-width:768px) { .grid,.grid-4 { grid-template-columns:1fr; }
+    :root { --sidebar-w:56px; }
+    .sidebar-header h3,.tab-btn .ticker-name,.tab-btn .price-sm { display:none; }
+    .sidebar-header .subtitle { display:none; }
+    .tab-btn { justify-content:center; padding:10px 6px; }
+}
+.metric { display:flex; justify-content:space-between; padding:4px 0;
+    border-bottom:1px solid #F1F5F9; font-size:13px; }
+.metric .key { color:var(--grey); }
+.metric .val { font-weight:600; }
+.positive { color:var(--green); }
+.negative { color:var(--red); }
+.flag { padding:4px 10px; margin:3px 0; border-radius:6px; font-size:12px; }
+.flag.green { background:#F0FDF4; color:#166534; border-left:3px solid var(--green); }
+.flag.red { background:#FEF2F2; color:#991B1B; border-left:3px solid var(--red); }
+.flag.amber { background:#FFFBEB; color:#92400E; border-left:3px solid var(--amber); }
+.data-table { width:100%; border-collapse:collapse; font-size:12px; }
+.data-table th { text-align:right; padding:4px 6px; background:#F8FAFC;
+    color:var(--grey); font-size:11px; border-bottom:2px solid var(--border); }
+.data-table td { text-align:right; padding:4px 6px; border-bottom:1px solid #F1F5F9; }
+.data-table td:first-child,.data-table th:first-child { text-align:left; }
+.bar-52w { height:6px; background:#E2E8F0; border-radius:3px; margin:6px 0; }
+.bar-52w .fill { height:100%; border-radius:3px; }
+.segment-tag { display:inline-block; background:#EBF5FF; color:var(--blue);
+    padding:3px 10px; border-radius:16px; margin:3px; font-size:12px; }
+.sh-bar { display:flex; height:20px; border-radius:6px; overflow:hidden; margin:8px 0; }
+.sh-bar > div { display:flex; align-items:center; justify-content:center;
+    font-size:10px; color:white; font-weight:600; }
+.doc-item { padding:3px 0; font-size:12px; }
+.doc-item a { color:var(--blue); text-decoration:none; }
+.footer { text-align:center; color:var(--grey); font-size:11px; padding:12px; }
+.footer a { color:var(--blue); text-decoration:none; }
+.period-bar { display:flex; gap:4px; margin-bottom:8px; }
+.period-btn { padding:5px 14px; border:1px solid var(--border); border-radius:6px;
+    background:var(--card); cursor:pointer; font-size:12px; font-weight:600;
+    color:var(--grey); font-family:inherit; transition:all 0.15s; }
+.period-btn:hover { color:var(--dark); border-color:#94A3B8; }
+.period-btn.active { background:var(--blue); color:white; border-color:var(--blue); }
+.section-header { display:flex; align-items:center; padding:8px 12px;
+    color:#94A3B8; font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:1.2px; cursor:pointer; user-select:none;
+    border-bottom:1px solid rgba(255,255,255,0.05);
+    transition:background 0.15s; }
+.section-header:hover { background:rgba(255,255,255,0.03); }
+.section-header .chevron { margin-right:6px; transition:transform 0.2s;
+    font-size:8px; display:inline-block; }
+.section-header.collapsed .chevron { transform:rotate(-90deg); }
+.section-header .sec-count { margin-left:auto; color:#475569;
+    font-size:9px; font-weight:400; }
+.section-body { overflow:hidden; transition:max-height 0.3s ease; }
+.section-body.collapsed { max-height:0 !important; overflow:hidden; }
+.add-symbol { padding:8px; border-top:1px solid rgba(255,255,255,0.1); position:relative; }
+.add-symbol input { width:100%; padding:7px 10px; border:1px solid rgba(255,255,255,0.15);
+    border-radius:6px; background:rgba(255,255,255,0.07); color:white;
+    font-size:12px; font-family:inherit; outline:none; }
+.add-symbol input::placeholder { color:#64748B; }
+.add-symbol input:focus { border-color:var(--blue); background:rgba(59,130,246,0.1); }
+.add-symbol .hint { font-size:9px; color:#475569; margin-top:4px; padding:0 2px; }
+.ac-dropdown { position:absolute; left:8px; right:8px; background:#1E293B;
+    border:1px solid rgba(255,255,255,0.15); border-radius:6px; max-height:240px;
+    overflow-y:auto; z-index:200; display:none; box-shadow:0 4px 12px rgba(0,0,0,0.4); }
+.ac-item { padding:7px 10px; cursor:pointer; font-size:12px; color:#CBD5E1;
+    display:flex; justify-content:space-between; align-items:center;
+    border-bottom:1px solid rgba(255,255,255,0.05); }
+.ac-item:last-child { border-bottom:none; }
+.ac-item:hover,.ac-item.highlighted { background:rgba(59,130,246,0.2); color:white; }
+.ac-item .ac-ticker { font-weight:700; color:white; }
+.ac-item .ac-name { font-size:11px; color:#94A3B8; margin-left:8px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.tab-btn .del-btn { display:none; margin-left:4px; width:16px; height:16px;
+    border-radius:50%; border:none; background:rgba(255,255,255,0.1); color:#94A3B8;
+    font-size:10px; cursor:pointer; line-height:16px; text-align:center;
+    flex-shrink:0; }
+.tab-btn:hover .del-btn { display:inline-flex; align-items:center; justify-content:center; }
+.tab-btn .del-btn:hover { background:#EF4444; color:white; }
+.loading-pane { text-align:center; padding:60px 20px; color:var(--grey); font-size:16px; }
+.loading-pane .spinner { display:inline-block; width:32px; height:32px;
+    border:3px solid var(--border); border-top-color:var(--blue);
+    border-radius:50%; animation:spin 0.8s linear infinite; margin-bottom:12px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+"""
+
+
+def _demo_js(stock_json: str) -> str:
+    """Return the JavaScript for the demo site with on-demand pane loading."""
+    return """
+var _stockIndex = """ + stock_json + """;
+var _loadedPanes = {};  // ticker -> true (already fetched)
+var _acTimer = null, _acIdx = -1, _acItems = [];
+
+// ── Load a stock pane on demand ──
+function loadStock(ticker) {
+    // Highlight the tab
+    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.tab-btn').forEach(function(b) {
+        if (b.dataset.ticker === ticker) b.classList.add('active');
+    });
+
+    // If already loaded, just show it
+    var existing = document.getElementById('pane-' + ticker);
+    if (existing) {
+        document.querySelectorAll('.tab-pane').forEach(function(p) { p.style.display = 'none'; });
+        existing.style.display = 'block';
+        setTimeout(function() {
+            existing.querySelectorAll('.js-plotly-plot').forEach(function(p) {
+                if (window.Plotly) Plotly.Plots.resize(p);
+            });
+        }, 150);
+        existing.scrollIntoView({behavior:'smooth', block:'start'});
+        return;
+    }
+
+    // Show loading state
+    var container = document.getElementById('main-container');
+    document.querySelectorAll('.tab-pane').forEach(function(p) { p.style.display = 'none'; });
+    var loader = document.getElementById('initial-loader');
+    if (!loader) {
+        loader = document.createElement('div');
+        loader.className = 'loading-pane';
+        loader.id = 'initial-loader';
+        container.appendChild(loader);
+    }
+    loader.innerHTML = '<div class="spinner"></div><br>Loading ' + ticker + '...';
+    loader.style.display = 'block';
+
+    // Fetch the pane HTML fragment
+    fetch('panes/' + ticker + '.html')
+        .then(function(r) {
+            if (!r.ok) throw new Error('Not found');
+            return r.text();
+        })
+        .then(function(html) {
+            loader.style.display = 'none';
+            // Insert the pane (it comes with its own div.tab-pane wrapper)
+            var wrapper = document.createElement('div');
+            wrapper.innerHTML = html;
+            var pane = wrapper.firstElementChild;
+            pane.style.display = 'block';
+            container.appendChild(pane);
+            _loadedPanes[ticker] = true;
+            // Execute deferred Plotly scripts
+            var scripts = pane.querySelectorAll('script[type="text/plotly-deferred"]');
+            scripts.forEach(function(s) {
+                var ns = document.createElement('script');
+                ns.textContent = s.textContent;
+                s.parentNode.replaceChild(ns, s);
+            });
+            // Also execute any regular inline scripts (from Plotly to_html)
+            var regularScripts = pane.querySelectorAll('script:not([type])');
+            regularScripts.forEach(function(s) {
+                var ns = document.createElement('script');
+                ns.textContent = s.textContent;
+                s.parentNode.replaceChild(ns, s);
+            });
+            setTimeout(function() {
+                pane.querySelectorAll('.js-plotly-plot').forEach(function(p) {
+                    if (window.Plotly) Plotly.Plots.resize(p);
+                });
+            }, 300);
+        })
+        .catch(function(err) {
+            loader.innerHTML = '<div style="color:#EF4444">Failed to load ' + ticker + ': ' + err.message + '</div>' +
+                '<p style="margin-top:12px"><a href="https://www.screener.in/company/' + ticker + '/" target="_blank" style="color:#3B82F6">View on screener.in \\u2192</a></p>';
+        });
+}
+
+function switchPeriod(ticker, period) {
+    var pane = document.getElementById('pane-' + ticker);
+    if (!pane) return;
+    pane.querySelectorAll('.price-period').forEach(function(d) { d.style.display = 'none'; });
+    var target = document.getElementById(ticker + '-' + period);
+    if (target) target.style.display = 'block';
+    var bar = document.getElementById('pbar-' + ticker);
+    if (bar) bar.querySelectorAll('.period-btn').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.period === period);
+    });
+    setTimeout(function() {
+        if (!target) return;
+        target.querySelectorAll('.js-plotly-plot').forEach(function(p) {
+            if (window.Plotly) { Plotly.Plots.resize(p); Plotly.relayout(p, { autosize: true }); }
+        });
+    }, 50);
+}
+
+function toggleSidebar() {
+    document.body.classList.toggle('sidebar-collapsed');
+    setTimeout(function() {
+        document.querySelectorAll('.js-plotly-plot').forEach(function(p) {
+            if (window.Plotly && p.offsetParent !== null) Plotly.Plots.resize(p);
+        });
+    }, 300);
+}
+
+function toggleSection(id) {
+    var hdr = document.getElementById('sec-hdr-' + id);
+    var body = document.getElementById('sec-body-' + id);
+    if (!hdr || !body) return;
+    hdr.classList.toggle('collapsed');
+    body.classList.toggle('collapsed');
+}
+
+function removeTab(ticker, evt) {
+    evt.stopPropagation();
+    var pane = document.getElementById('pane-' + ticker);
+    var btn = document.querySelector('.tab-btn[data-ticker="' + ticker + '"]');
+    var wasActive = btn && btn.classList.contains('active');
+    if (pane) pane.remove();
+    if (btn) btn.remove();
+    delete _loadedPanes[ticker];
+    if (wasActive) {
+        var first = document.querySelector('.tab-btn');
+        if (first) loadStock(first.dataset.ticker);
+    }
+}
+
+// ── Client-side autocomplete from pre-built stock index ──
+function showAC(items) {
+    var dd = document.getElementById('ac-dropdown');
+    if (!items || !items.length) { hideAC(); return; }
+    _acItems = items;
+    _acIdx = -1;
+    dd.innerHTML = '';
+    items.forEach(function(item, idx) {
+        var div = document.createElement('div');
+        div.className = 'ac-item';
+        div.innerHTML = '<span class="ac-ticker">' + item.ticker + '</span><span class="ac-name">' + (item.name||'') + '</span>';
+        div.onmousedown = function(e) { e.preventDefault(); loadStock(item.ticker); hideAC(); document.getElementById('add-symbol-input').value = ''; };
+        div.onmouseover = function() { highlightAC(idx); };
+        dd.appendChild(div);
+    });
+    dd.style.display = 'block';
+}
+function hideAC() {
+    var dd = document.getElementById('ac-dropdown');
+    if (dd) dd.style.display = 'none';
+    _acIdx = -1; _acItems = [];
+}
+function highlightAC(idx) {
+    var dd = document.getElementById('ac-dropdown');
+    var items = dd.querySelectorAll('.ac-item');
+    items.forEach(function(el, i) { el.classList.toggle('highlighted', i === idx); });
+    _acIdx = idx;
+}
+
+function handleSymbolInput(e) {
+    var input = e.target;
+    var val = input.value.trim().toUpperCase();
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (_acItems.length) highlightAC(Math.min(_acIdx + 1, _acItems.length - 1));
+        return;
+    }
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (_acItems.length) highlightAC(Math.max(_acIdx - 1, 0));
+        return;
+    }
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        if (_acIdx >= 0 && _acItems[_acIdx]) {
+            loadStock(_acItems[_acIdx].ticker);
+        } else if (val) {
+            loadStock(val.replace(/[^A-Z0-9&-]/g, ''));
+        }
+        hideAC();
+        input.value = '';
+        return;
+    }
+    if (e.key === 'Escape') { hideAC(); return; }
+
+    // Debounced local search through stock index
+    clearTimeout(_acTimer);
+    if (val.length < 1) { hideAC(); return; }
+    _acTimer = setTimeout(function() {
+        var q = val.toLowerCase();
+        var matches = _stockIndex.filter(function(s) {
+            return s.ticker.toLowerCase().indexOf(q) >= 0 ||
+                   s.name.toLowerCase().indexOf(q) >= 0;
+        }).slice(0, 10);
+        showAC(matches);
+    }, 100);
+}
+
+// ── Keyboard navigation for stock tabs ──
+document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    var btns = Array.from(document.querySelectorAll('.tab-btn'));
+    if (!btns.length) return;
+    var activeIdx = btns.findIndex(function(b) { return b.classList.contains('active'); });
+    if (e.key === 'ArrowDown') {
+        activeIdx = (activeIdx + 1) % btns.length;
+    } else {
+        activeIdx = (activeIdx - 1 + btns.length) % btns.length;
+    }
+    loadStock(btns[activeIdx].dataset.ticker);
+    btns[activeIdx].scrollIntoView({ block: 'nearest' });
+});
+
+// Close autocomplete when clicking outside
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.add-symbol')) hideAC();
+});
+
+// ── Load first stock on page load ──
+(function() {
+    if (_stockIndex.length > 0) {
+        loadStock(_stockIndex[0].ticker);
+    }
+})();
+"""
 
 def _load_watchlist(path: str) -> list:
     """Load tickers from a watchlist file (one per line, # comments, blank lines OK)."""
@@ -3212,6 +3727,8 @@ Examples:
                         help="Output file path")
     parser.add_argument("--sections", type=str, nargs="+", metavar="NAME:FILE",
                         help="Accordion sections as NAME:FILE pairs, e.g. 'Nifty 50:nifty50.txt' 'My Stocks:watchlist.txt'")
+    parser.add_argument("--demo", type=str, metavar="DIR", default=None,
+                        help="Generate split-file demo site in DIR (index.html + panes/)")
 
     args = parser.parse_args()
 
@@ -3277,8 +3794,8 @@ Examples:
         print(f"\n{C.RED}❌ No stocks could be fetched.{C.RESET}")
         sys.exit(1)
 
-    # Generate charts and Sankey for HTML/serve modes
-    if args.html or args.serve:
+    # Generate charts and Sankey for HTML/serve/demo modes
+    if args.html or args.serve or args.demo:
         for s in stocks:
             t = s["ticker"]
             try:
@@ -3303,6 +3820,11 @@ Examples:
             except Exception as e:
                 print(f"{C.GREY}   ⚠ Sankey skipped for {t}: {e}{C.RESET}")
                 s["sankey_html"] = ""
+
+    # ── DEMO SITE MODE ──
+    if args.demo:
+        generate_demo_site(stocks, args.demo, sections=sections)
+        return
 
     # ── SERVE MODE ──
     if args.serve:
